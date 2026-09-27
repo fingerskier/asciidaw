@@ -1,0 +1,30 @@
+[package]
+name = "asciidaw"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "A terminal DAW for recording a track or two and getting .wav files out"
+license-file = "LICENSE"
+readme = "README.md"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+cpal = "0.18.2"
+hound = "3.5.1"
+libc = "0.2.189"
+ratatui = "0.30.2"
+rtrb = "0.4.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+
+[features]
+# Extra cpal hosts. ALSA is always available on Linux (and reaches PipeWire /
+# PulseAudio through their ALSA plugins); these talk to the servers directly.
+jack = ["cpal/jack"]
+pipewire = ["cpal/pipewire"]
+pulseaudio = ["cpal/pulseaudio"]
+
+[profile.dev]
+# The mixer runs in the audio callback; unoptimized builds glitch easily.
+opt-level = 1
