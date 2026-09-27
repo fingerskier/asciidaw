@@ -2,21 +2,9 @@
 
 A terminal DAW for the boring, important job: **record a track or two, trim it, get a `.wav` out.**
 
-```
- ▶  ●  ■     0:07.400  STOP   demo *                                              48000 Hz · 162 ms/col
- cursor 0:07.400          ▏0:00       ▏0:02       ▏0:04        ▏0:06   ▼   ▏0:08       ▏0:10        ▏0:1
-▌1 Vocal                  ▏track-1-take-001                            ▏track-1-take-001
-  M   S   R   in 1        ▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅│  ▁▃▃▄▄▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅▅
- +0.0 dB    pan C         █████████████████████████████████████████████│▄▇███████████████████████████
- ························ █████████████████████████████████████████████▅█████████████████████████████
- 2 Guitar                                   ▏rec-001              ▏rec-002
-  M   S   R   in 2                          ▂▂▂▂▂▂▂▂▂▂▂▂▂         ▂▂▂▂▂▂▂▂▂▂▂▂▂
- +0.0 dB    pan L30                         █████████████         █████████████
- ························                   █████████████         █████████████
+![asciidaw showing two tracks, waveforms, and live input meters](asset/screenshot.png)
 
- IN 1 ██████████████▍·   -6 2 ████████████▊···  -12                 │ OUT L ············ R ············
- fade in 1.60s                          track-1-take-001 · 0:04.625 · peak -6.0 dBFS · fades 1.60/0.00s
-```
+[One-page documentation](https://fingerskier.github.io/asciidaw/) · [Releases](https://github.com/fingerskier/asciidaw/releases)
 
 - Record mono or stereo takes from any input channel(s), several tracks at once, while hearing the rest.
 - Clips: split, cut / copy / paste, duplicate, drag between tracks, nudge, fades, clip gain, normalize, undo.

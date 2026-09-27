@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#171722">
+  <meta name="description" content="Install asciidaw, record a track or two in your terminal, edit clips, and export WAV files.">
+  <title>asciidaw — documentation</title>
+  <style>
+    :root { color-scheme: dark; --bg:#171722; --panel:#20202e; --line:#38394b; --text:#f1f0f5; --muted:#b7b8c8; --mint:#a8e6b1; --pink:#ed95ae; --blue:#8ec7ec; }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin:0; background:var(--bg); color:var(--text); font: 16px/1.65 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    a { color:var(--mint); text-underline-offset:.18em; }
+    a:hover { color:#d6f8dc; }
+    a:focus-visible { outline:2px solid var(--pink); outline-offset:4px; }
+    code, pre, kbd { font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; }
+    code { color:#d6ecfb; }
+    pre { margin:1rem 0; padding:1rem 1.25rem; overflow-x:auto; background:#11121b; border:1px solid var(--line); border-radius:8px; line-height:1.55; }
+    pre code { color:var(--text); }
+    kbd { display:inline-block; padding:.08rem .4rem; background:#313244; border:1px solid #505166; border-radius:4px; color:var(--text); font-size:.88em; white-space:nowrap; }
+    .shell { max-width:1200px; margin:auto; padding:0 clamp(1rem, 3vw, 2.5rem); }
+    header { border-bottom:1px solid var(--line); }
+    .topbar { min-height:66px; display:flex; align-items:center; justify-content:space-between; gap:1rem; }
+    .brand { display:flex; align-items:center; gap:.65rem; color:var(--text); text-decoration:none; font:700 1.12rem ui-monospace, monospace; }
+    .mark { color:var(--mint); font-size:1.4rem; }
+    .toplinks { display:flex; flex-wrap:wrap; gap:1.3rem; font-size:.92rem; }
+    .toplinks a { color:var(--muted); text-decoration:none; }
+    .toplinks a:hover { color:var(--mint); }
+    .hero { display:grid; grid-template-columns:minmax(0, .85fr) minmax(0, 1.15fr); align-items:center; gap:clamp(2rem, 5vw, 5rem); padding:clamp(3.5rem, 7vw, 6rem) 0 4rem; }
+    .eyebrow { color:var(--mint); font:.82rem ui-monospace, monospace; letter-spacing:.16em; text-transform:uppercase; }
+    h1, h2, h3 { line-height:1.15; letter-spacing:-.035em; }
+    h1 { margin:.7rem 0 1.2rem; font-size:clamp(2.9rem, 6vw, 5.4rem); }
+    h2 { margin:0 0 1rem; font-size:clamp(1.8rem, 3vw, 2.35rem); }
+    h3 { margin:1.5rem 0 .5rem; font-size:1.15rem; }
+    p { margin:.75rem 0 1.1rem; }
+    .lede { color:var(--muted); font-size:1.15rem; max-width:35rem; }
+    .actions { display:flex; flex-wrap:wrap; gap:.8rem; margin-top:1.7rem; }
+    .button { display:inline-flex; align-items:center; justify-content:center; min-height:44px; padding:.5rem 1rem; border:1px solid var(--mint); border-radius:6px; background:var(--mint); color:#17221b; font-weight:700; text-decoration:none; }
+    .button:hover { background:#d6f8dc; color:#17221b; }
+    .button.secondary { background:transparent; color:var(--mint); }
+    .button.secondary:hover { background:#26352b; }
+    figure { margin:0; }
+    .shot { padding:.45rem; background:#10111a; border:1px solid var(--line); border-radius:10px; box-shadow:0 24px 65px #09091080; }
+    .shot img { display:block; width:100%; height:auto; border-radius:4px; }
+    figcaption { margin-top:.65rem; color:var(--muted); font-size:.85rem; }
+    .docs { display:grid; grid-template-columns:190px minmax(0, 1fr); gap:clamp(2rem, 5vw, 5rem); border-top:1px solid var(--line); }
+    aside { padding-top:3rem; }
+    aside nav { position:sticky; top:1.5rem; display:grid; gap:.35rem; font-size:.9rem; }
+    aside a { display:block; padding:.28rem .7rem; border-left:2px solid transparent; color:var(--muted); text-decoration:none; }
+    aside a:hover, aside a:focus-visible { border-color:var(--mint); color:var(--mint); }
+    main { min-width:0; }
+    section { padding:3rem 0; border-bottom:1px solid var(--line); scroll-margin-top:1rem; }
+    section:last-child { border-bottom:0; }
+    .section-label { margin:0 0 .5rem; color:var(--pink); font:.8rem ui-monospace, monospace; letter-spacing:.12em; text-transform:uppercase; }
+    .intro { color:var(--muted); max-width:48rem; }
+    .grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:1rem; margin-top:1.5rem; }
+    .card { padding:1.2rem 1.35rem; background:var(--panel); border:1px solid var(--line); border-radius:8px; }
+    .card h3 { margin:0 0 .45rem; }
+    .card p { margin:0; color:var(--muted); }
+    .note { padding:.8rem 1rem; border-left:3px solid var(--blue); background:#242837; color:var(--text); }
+    .table-wrap { overflow-x:auto; }
+    table { width:100%; border-collapse:collapse; font-size:.95rem; }
+    th, td { padding:.6rem .65rem; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
+    th { color:var(--muted); font-weight:600; }
+    td:first-child { white-space:nowrap; }
+    ul { padding-left:1.3rem; }
+    li { margin:.4rem 0; }
+    footer { padding:2rem 0 3rem; color:var(--muted); font-size:.9rem; }
+    @media (max-width:800px) { .hero { grid-template-columns:1fr; padding-top:3rem; } .docs { grid-template-columns:1fr; gap:0; } aside { padding:1rem 0 0; } aside nav { position:static; display:flex; flex-wrap:wrap; gap:.2rem .6rem; } aside a { border-left:0; border-bottom:2px solid transparent; padding:.25rem 0; } .grid { grid-template-columns:1fr; } }
+    @media (max-width:520px) { .topbar { align-items:flex-start; flex-direction:column; padding:1rem 0; } .toplinks { gap:.8rem; } section { padding:2.5rem 0; } }
+    @media (prefers-reduced-motion:reduce) { html { scroll-behavior:auto; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="shell topbar">
+      <a class="brand" href="#top"><span class="mark" aria-hidden="true">▶</span> asciidaw</a>
+      <nav class="toplinks" aria-label="External links">
+        <a href="https://github.com/fingerskier/asciidaw">GitHub</a>
+        <a href="https://github.com/fingerskier/asciidaw/releases">Releases</a>
+        <a href="https://github.com/fingerskier/asciidaw/issues">Issues</a>
+      </nav>
+    </div>
+  </header>
+  <div class="shell" id="top">
+    <div class="hero">
+      <div>
+        <div class="eyebrow">A small terminal DAW</div>
+        <h1>Record. Edit.<br>Get a WAV out.</h1>
+        <p class="lede">asciidaw handles the straightforward job: record a track or two, trim your takes, and export a mix. Work with your keyboard or mouse, right in the terminal.</p>
+        <div class="actions">
+          <a class="button" href="#install">Install asciidaw</a>
+          <a class="button secondary" href="#quick-start">Quick start</a>
+        </div>
+      </div>
+      <figure>
+        <div class="shot"><img src="screenshot.png" width="1065" height="731" alt="asciidaw terminal interface with two waveform tracks, a selected blue clip, transport, and input meters"></div>
+        <figcaption>Two tracks, a selected take, and live input meters.</figcaption>
+      </figure>
+    </div>
+    <div class="docs">
+      <aside>
+        <nav aria-label="On this page">
+          <a href="#overview">Overview</a><a href="#install">Install</a><a href="#quick-start">Quick start</a><a href="#editing">Editing</a><a href="#commands">Commands</a><a href="#projects">Projects</a><a href="#notes">Good to know</a>
+        </nav>
+      </aside>
+      <main>
+        <section id="overview">
+          <p class="section-label">01 / Overview</p>
+          <h2>Just enough DAW</h2>
+          <p class="intro">Record mono or stereo input on multiple tracks while hearing the rest of the project. Edit clips, set gain and pan, then export a stereo or mono mix, stems, or one clip as WAV.</p>
+          <div class="grid">
+            <div class="card"><h3>Capture</h3><p>Arm tracks, choose input channels, watch live meters, and record takes into your project.</p></div>
+            <div class="card"><h3>Arrange</h3><p>Split, cut, paste, duplicate, nudge, drag, fade, normalize, and undo clip edits.</p></div>
+            <div class="card"><h3>Mix</h3><p>Mute or solo tracks, set track gain and pan, and export 16, 24, or 32-bit float WAV.</p></div>
+            <div class="card"><h3>Automate</h3><p>Use headless <code>record</code>, <code>export</code>, and <code>info</code> commands without the interface.</p></div>
+          </div>
+        </section>
+        <section id="install">
+          <p class="section-label">02 / Install</p>
+          <h2>Choose a build</h2>
+          <p>Download a prebuilt Linux or macOS binary from <a href="https://github.com/fingerskier/asciidaw/releases">Releases</a>. Set <code>target</code> to one of <code>x86_64-unknown-linux-gnu</code>, <code>aarch64-unknown-linux-gnu</code>, <code>aarch64-apple-darwin</code>, or <code>x86_64-apple-darwin</code>.</p>
+          <pre><code>target=x86_64-unknown-linux-gnu
+mkdir -p ~/.local/bin
+curl -fsSL "https://github.com/fingerskier/asciidaw/releases/latest/download/asciidaw-$target.tar.gz" \
+  | tar -xz -C ~/.local/bin asciidaw
+asciidaw --version</code></pre>
+          <p>For a source build, install Rust 1.88 or newer. Linux also needs ALSA development headers and <code>pkg-config</code>. Then run:</p>
+          <pre><code>cargo install --locked --git https://github.com/fingerskier/asciidaw</code></pre>
+          <p class="note">Linux is the tested platform. Linux binaries need glibc 2.35 or newer and <code>libasound.so.2</code>. macOS builds are unsigned; Windows is not supported yet. <code>ffmpeg</code> is optional and only needed to import non-WAV files.</p>
+        </section>
+        <section id="quick-start">
+          <p class="section-label">03 / Quick start</p>
+          <h2>From input to mix</h2>
+          <pre><code>asciidaw devices                     # list available audio devices
+asciidaw my-song                     # open or create a project
+asciidaw my-song --input "Scarlett"  # choose a device by name or ID</code></pre>
+          <ol>
+            <li>Choose a track and its input channel. Press <kbd>a</kbd> to arm it.</li>
+            <li>Press <kbd>r</kbd> to record. Press <kbd>space</kbd> or <kbd>r</kbd> to stop.</li>
+            <li>Move the cursor, edit the take, and press <kbd>e</kbd> to export a mix into <code>exports/</code>.</li>
+          </ol>
+          <p>For recording or exporting without the interface:</p>
+          <pre><code>asciidaw record take.wav -c 1-2 -d 3:00
+asciidaw export my-song --stems -b 16
+asciidaw info take.wav</code></pre>
+        </section>
+        <section id="editing">
+          <p class="section-label">04 / Editing</p>
+          <h2>Keyboard and mouse</h2>
+          <div class="table-wrap"><table><thead><tr><th>Key</th><th>Action</th></tr></thead><tbody>
+            <tr><td><kbd>space</kbd> / <kbd>enter</kbd></td><td>Play or stop; Enter stops at the current position.</td></tr>
+            <tr><td><kbd>←</kbd> <kbd>→</kbd> / <kbd>h</kbd> <kbd>l</kbd></td><td>Move the cursor; Shift moves it ten columns.</td></tr>
+            <tr><td><kbd>↑</kbd> <kbd>↓</kbd> / <kbd>j</kbd> <kbd>k</kbd></td><td>Select a track. Tab moves between clips.</td></tr>
+            <tr><td><kbd>=</kbd> <kbd>-</kbd> <kbd>0</kbd></td><td>Zoom in, out, or fit.</td></tr>
+            <tr><td><kbd>a</kbd> <kbd>m</kbd> <kbd>s</kbd></td><td>Arm, mute, or solo a track.</td></tr>
+            <tr><td><kbd>b</kbd></td><td>Split the clip at the cursor.</td></tr>
+            <tr><td><kbd>x</kbd> <kbd>c</kbd> <kbd>v</kbd></td><td>Cut, copy, or paste a clip.</td></tr>
+            <tr><td><kbd>d</kbd> <kbd>del</kbd></td><td>Duplicate or delete a clip.</td></tr>
+            <tr><td><kbd>{</kbd> <kbd>}</kbd></td><td>Fade in or out to the cursor.</td></tr>
+            <tr><td><kbd>u</kbd> <kbd>U</kbd></td><td>Undo or redo edits.</td></tr>
+            <tr><td><kbd>?</kbd></td><td>Open the full in-app help.</td></tr>
+          </tbody></table></div>
+          <p>Mouse controls let you select and drag clips, set in/out markers on the ruler, toggle track controls, adjust gain or pan with the wheel, and zoom with Ctrl-wheel.</p>
+        </section>
+        <section id="commands">
+          <p class="section-label">05 / Commands</p>
+          <h2>Type <code>:</code> for more</h2>
+          <pre><code>:export [path] [mono] [16|24|32]  # mix
+:stems [dir] [16|24|32]         # one file per track
+:clip [path]                    # selected clip only
+:import &lt;file&gt;                  # import at the cursor
+:gain &lt;dB&gt;   :pan L30|C|R100    # track mix
+:input 1 | 1-2   :rename &lt;name&gt; # track setup
+:clipgain &lt;dB&gt;   :normalize      # clip level
+:fadein &lt;s&gt;   :fadeout &lt;s&gt;      # clip fades
+:latency &lt;ms&gt;   :goto &lt;m:ss&gt;    # timing
+:w   :q   :q!   :wq             # save and quit</code></pre>
+          <p>The <a href="https://github.com/fingerskier/asciidaw#keys">README key reference</a> lists every shortcut and command.</p>
+        </section>
+        <section id="projects">
+          <p class="section-label">06 / Projects</p>
+          <h2>Plain files you can keep</h2>
+          <pre><code>my-song/
+  project.json   # tracks, clips, and gains
+  audio/         # original takes and imported audio
+  exports/       # rendered files</code></pre>
+          <p>Recordings stream to WAV in <code>audio/</code> and the project saves when a take finishes. Imports are copied into the project. Edits change clip references; the source audio files stay intact.</p>
+        </section>
+        <section id="notes">
+          <p class="section-label">07 / Good to know</p>
+          <h2>Practical details</h2>
+          <ul>
+            <li>Clips on a track cannot overlap. Pasting or dropping a clip overwrites what is underneath.</li>
+            <li>Use your audio interface's direct monitoring; asciidaw does not provide software input monitoring.</li>
+            <li>Latency compensation is manual. Set <code>:latency &lt;ms&gt;</code> after measuring your interface.</li>
+            <li>Metronome, effects, MIDI, and Windows support are not available yet.</li>
+          </ul>
+          <p>See the <a href="https://github.com/fingerskier/asciidaw">repository</a> for development notes and the complete feature reference.</p>
+        </section>
+      </main>
+    </div>
+    <footer>asciidaw · <a href="https://github.com/fingerskier/asciidaw">Source on GitHub</a> · <a href="https://github.com/fingerskier/asciidaw/blob/main/LICENSE">License</a></footer>
+  </div>
+</body>
+</html>
