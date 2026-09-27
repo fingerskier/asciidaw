@@ -2,7 +2,9 @@ name: ci
 
 on:
   push:
+    branches: ['**'] # tags run this via release.yml instead
   pull_request:
+  workflow_call:
 
 jobs:
   test:

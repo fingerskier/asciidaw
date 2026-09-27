@@ -27,6 +27,26 @@ A terminal DAW for the boring, important job: **record a track or two, trim it, 
 
 ## Install
 
+### Prebuilt binary
+
+Every [release](https://github.com/fingerskier/asciidaw/releases) has Linux (x86_64, arm64) and macOS (Apple
+silicon, Intel) builds:
+
+```sh
+# x86_64-unknown-linux-gnu · aarch64-unknown-linux-gnu · aarch64-apple-darwin · x86_64-apple-darwin
+target=x86_64-unknown-linux-gnu
+mkdir -p ~/.local/bin
+curl -fsSL "https://github.com/fingerskier/asciidaw/releases/latest/download/asciidaw-$target.tar.gz" \
+  | tar -xz -C ~/.local/bin asciidaw
+asciidaw --version                      # if not found, add ~/.local/bin to your PATH
+```
+
+Linux builds need glibc ≥ 2.35 (Ubuntu 22.04, Debian 12, anything rolling) and `libasound.so.2`, which any
+desktop distro already has. macOS builds are unsigned: fine via `curl`, but if you downloaded with a browser run
+`xattr -d com.apple.quarantine asciidaw` first. Each release also has a `SHA256SUMS`.
+
+### From source
+
 Needs Rust ≥ 1.88 and the ALSA headers:
 
 ```sh
@@ -34,7 +54,7 @@ sudo pacman -S alsa-lib                 # Arch / Omarchy
 sudo apt install libasound2-dev pkg-config   # Debian / Ubuntu
 sudo dnf install alsa-lib-devel         # Fedora
 
-cargo install --path .
+cargo install --locked --git https://github.com/fingerskier/asciidaw   # or, in a clone: cargo install --path .
 ```
 
 On PipeWire or PulseAudio systems the default ALSA device is routed through their ALSA plugin, so it just
@@ -147,6 +167,10 @@ waveform zoom per track · Windows.
 cargo test                 # model, mixer, WAV, edits, commands, and TUI rendering via TestBackend
 cargo clippy --all-targets
 ```
+
+To release, bump `version` in `Cargo.toml`, run `cargo check` so `Cargo.lock` follows, commit, then
+`git tag v0.2.0 && git push origin v0.2.0`. The release workflow runs CI, checks the tag matches `Cargo.toml`,
+builds the four targets and publishes them (a tag with a `-`, like `v0.2.0-rc.1`, becomes a prerelease).
 
 The audio thread never locks or allocates: it owns a snapshot of the tracks (audio is `Arc`-shared, so
 snapshots are cheap), swaps in new ones from a lock-free ring and hands the old ones back to the UI thread

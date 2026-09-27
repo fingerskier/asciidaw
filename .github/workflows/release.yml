@@ -1,0 +1,86 @@
+name: release
+
+# Push a tag like v0.2.0 (or v0.2.0-rc.1 for a prerelease) to build and publish a release.
+on:
+  push:
+    tags: ['v[0-9]*']
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches Cargo.toml
+        run: |
+          want="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
+          if [ "${GITHUB_REF_NAME#v}" != "$want" ]; then
+            echo "::error::tag $GITHUB_REF_NAME, but Cargo.toml says $want"
+            exit 1
+          fi
+
+  build:
+    needs: [ci, version]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Oldest available Ubuntu keeps the glibc floor low (2.35). Default features only: ALSA reaches
+          # PipeWire / PulseAudio through their plugins, so the binary needs nothing beyond libasound.
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04 }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm }
+          - { target: aarch64-apple-darwin, os: macos-latest }
+          - { target: x86_64-apple-darwin, os: macos-latest }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      # Asset names carry no version so releases/latest/download/<name> is a stable URL.
+      - name: Package
+        env:
+          TARGET: ${{ matrix.target }}
+          COPYFILE_DISABLE: 1 # no ._ files from macOS tar
+        run: |
+          mkdir staging
+          cp "target/$TARGET/release/asciidaw" README.md LICENSE staging/
+          tar -czf "asciidaw-$TARGET.tar.gz" -C staging asciidaw README.md LICENSE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: asciidaw-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - run: sha256sum -- *.tar.gz > SHA256SUMS
+        working-directory: dist
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          flags=()
+          if [[ "$TAG" == *-* ]]; then flags+=(--prerelease); fi
+          # Re-runs reuse the existing release and replace its assets.
+          gh release view "$TAG" >/dev/null 2>&1 ||
+            gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes "${flags[@]}"
+          gh release upload "$TAG" dist/* --clobber
