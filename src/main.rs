@@ -47,7 +47,7 @@ struct AudioArgs {
     #[arg(long, global = true, value_name = "DEVICE")]
     output: Option<String>,
     /// Sample rate for new projects / headless recording (default: device's)
-    #[arg(long, global = true, value_name = "HZ")]
+    #[arg(long, global = true, value_name = "HZ", value_parser = clap::value_parser!(u32).range(8000..=384_000))]
     rate: Option<u32>,
 }
 
@@ -111,7 +111,10 @@ fn main() {
 }
 
 fn run() -> Result<()> {
-    let cli = Cli::parse();
+    run_with(Cli::parse())
+}
+
+fn run_with(cli: Cli) -> Result<()> {
     let opts = AudioOpts { host: cli.audio.host, input: cli.audio.input, output: cli.audio.output };
     match cli.cmd {
         None => tui::run(cli.dir.unwrap_or_else(|| PathBuf::from(".")), opts, cli.audio.rate),
@@ -123,5 +126,20 @@ fn run() -> Result<()> {
             cli::export(cli::ExportArgs { dir, out, stems, mono, bits, from, to })
         }
         Some(Cmd::Info { files }) => cli::info(&files),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rate_must_be_a_real_sample_rate() {
+        for bad in ["0", "7999", "1000000", "abc"] {
+            assert!(Cli::try_parse_from(["asciidaw", "--rate", bad]).is_err(), "--rate {bad}");
+            assert!(Cli::try_parse_from(["asciidaw", "record", "x.wav", "--rate", bad]).is_err());
+        }
+        let ok = Cli::try_parse_from(["asciidaw", "song", "--rate", "44100"]).unwrap();
+        assert_eq!(ok.audio.rate, Some(44100));
     }
 }

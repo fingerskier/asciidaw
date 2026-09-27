@@ -115,20 +115,34 @@ impl WavOut {
     }
 }
 
-/// Write planar channels to a WAV file in one go.
+/// Write planar channels to a WAV file in one go. Goes through a sibling
+/// temp file and a rename, so an existing file (say, the only copy of a
+/// take) survives a failed write untouched.
 pub fn write_wav(path: &Path, rate: u32, channels: &[Vec<f32>], bits: Bits) -> Result<()> {
-    let nch = channels.len();
-    let frames = channels.first().map_or(0, Vec::len);
-    let mut out = WavOut::create(path, rate, nch as u16, bits)?;
-    let mut buf = Vec::with_capacity(4096 * nch);
-    for chunk_start in (0..frames).step_by(4096) {
-        buf.clear();
-        for f in chunk_start..(chunk_start + 4096).min(frames) {
-            buf.extend(channels.iter().map(|c| c[f]));
-        }
-        out.write_interleaved(&buf)?;
+    if channels.is_empty() {
+        bail!("no audio channels to write to {}", path.display());
     }
-    out.finalize()
+    let name = path.file_name().with_context(|| format!("{} is not a file path", path.display()))?;
+    let tmp = path.with_file_name(format!(".{}.tmp", name.to_string_lossy()));
+    let written = (|| {
+        let nch = channels.len();
+        let frames = channels.first().map_or(0, Vec::len);
+        let mut out = WavOut::create(&tmp, rate, nch as u16, bits)?;
+        let mut buf = Vec::with_capacity(4096 * nch);
+        for chunk_start in (0..frames).step_by(4096) {
+            buf.clear();
+            for f in chunk_start..(chunk_start + 4096).min(frames) {
+                buf.extend(channels.iter().map(|c| c[f]));
+            }
+            out.write_interleaved(&buf)?;
+        }
+        out.finalize()?;
+        std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
 }
 
 /// Decoded file: sample rate plus planar f32 channels.
@@ -223,6 +237,25 @@ mod tests {
             let err = d.channels[1].iter().zip(&chans[1]).fold(0f32, |m, (a, b)| m.max((a - b).abs()));
             assert!(err <= tol, "{bits:?} error {err}");
         }
+    }
+
+    #[test]
+    fn failed_rewrite_leaves_the_original_intact() {
+        let p = tmp("keep.wav");
+        let take = vec![vec![0.25f32; 500]];
+        write_wav(&p, 48000, &take, Bits::F32).unwrap();
+        // Make the replacement write fail: a directory squats on the temp name.
+        let blocker = p.with_file_name(".keep.wav.tmp");
+        std::fs::create_dir_all(&blocker).unwrap();
+        assert!(write_wav(&p, 44100, &[vec![0.5; 10]], Bits::F32).is_err());
+        let d = read_wav(&p).unwrap();
+        assert_eq!((d.rate, d.frames(), d.channels[0][0]), (48000, 500, 0.25));
+        std::fs::remove_dir(&blocker).unwrap();
+        assert!(write_wav(&p, 48000, &[], Bits::F32).is_err());
+        // A successful rewrite replaces it.
+        write_wav(&p, 44100, &[vec![0.5; 10]], Bits::F32).unwrap();
+        assert_eq!(read_wav(&p).unwrap().rate, 44100);
+        assert!(!blocker.exists(), "temp file left behind");
     }
 
     #[test]

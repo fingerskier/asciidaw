@@ -140,7 +140,8 @@ pub fn record(args: RecordArgs, opts: &AudioOpts) -> Result<()> {
     let mut frames = 0u64;
     let mut peak_total = [0f32; 2];
     let mut level = [0f32; 2];
-    let started = Instant::now();
+    let mut last_audio = Instant::now();
+    let mut stalled = false;
     let mut last_flush = Instant::now();
     let mut overruns_seen = engine.shared.input_overruns.load(Ordering::Relaxed);
     let mut capture = || -> Result<()> {
@@ -204,8 +205,16 @@ pub fn record(args: RecordArgs, opts: &AudioOpts) -> Result<()> {
                 eprintln!("\n{e}");
             }
             std::thread::sleep(Duration::from_millis(30));
-            if started.elapsed() > Duration::from_secs(3) && frames == 0 {
-                bail!("no audio arriving from {} after 3 s", info.name);
+            // Watch wall time, not frames: a device that stops delivering
+            // (unplugged, server gone) must not hang a timed recording.
+            if !buf.is_empty() {
+                last_audio = Instant::now();
+            } else if last_audio.elapsed() > Duration::from_secs(3) {
+                if frames == 0 {
+                    bail!("no audio arriving from {} after 3 s", info.name);
+                }
+                stalled = true;
+                break Ok(());
             }
         }
     };
@@ -238,6 +247,9 @@ pub fn record(args: RecordArgs, opts: &AudioOpts) -> Result<()> {
     }
     if overruns > 0 {
         eprintln!("warning: {overruns} frames dropped (system too busy)");
+    }
+    if stalled {
+        bail!("{} stopped delivering audio; kept the {} recorded before that", info.name, fmt_time(frames, info.rate));
     }
     Ok(())
 }
