@@ -129,7 +129,7 @@ pub fn render_to_file(
     bits: Bits,
 ) -> Result<Rendered> {
     if to <= from {
-        bail!("nothing to render (empty range)");
+        bail!("nothing to render: empty range (check the in/out markers)");
     }
     const CHUNK: usize = 8192;
     let mut out = WavOut::create(path, rate, opts.channels as u16, bits)?;
@@ -152,7 +152,9 @@ pub fn render_to_file(
 /// of the last clip.
 pub fn export_range(project: &Project, markers: (Option<u64>, Option<u64>)) -> (u64, u64) {
     match markers {
-        (Some(a), Some(b)) if a != b => (a.min(b), a.max(b)),
+        // Equal markers give an empty range, which export reports, rather
+        // than silently falling back to the whole project.
+        (Some(a), Some(b)) => (a.min(b), a.max(b)),
         (Some(a), None) => (a, project.end()),
         (None, Some(b)) => (0, b),
         _ => (0, project.end()),
@@ -288,6 +290,9 @@ mod tests {
         assert_eq!(export_range(&p, (None, None)), (0, 600));
         assert_eq!(export_range(&p, (Some(300), Some(200))), (200, 300));
         assert_eq!(export_range(&p, (Some(50), None)), (50, 600));
+        assert_eq!(export_range(&p, (Some(70), Some(70))), (70, 70));
+        let err = export_mix(&p, Path::new("never-written.wav"), (70, 70), false, Bits::I24).unwrap_err();
+        assert!(err.to_string().contains("empty range"));
     }
 
     #[test]

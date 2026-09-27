@@ -103,7 +103,14 @@ enum Cmd {
     },
 }
 
-fn main() -> Result<()> {
+fn main() {
+    if let Err(e) = run() {
+        eprintln!("asciidaw: {e:#}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<()> {
     let cli = Cli::parse();
     let opts = AudioOpts { host: cli.audio.host, input: cli.audio.input, output: cli.audio.output };
     match cli.cmd {

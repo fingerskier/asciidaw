@@ -86,7 +86,7 @@ pub fn record(args: RecordArgs, opts: &AudioOpts) -> Result<()> {
         Some(s) => Input::parse(s).with_context(|| format!("bad --channels {s:?}: use 1, 2 or 1-2"))?,
         None => Input { channel: 0, stereo: info.channels >= 2 },
     };
-    if spec.channel + spec.channels() > info.channels {
+    if !spec.fits(info.channels) {
         bail!("{} has {} input channel(s); can't record {spec}", info.name, info.channels);
     }
     let mono_files = args.split && spec.stereo;
@@ -101,10 +101,17 @@ pub fn record(args: RecordArgs, opts: &AudioOpts) -> Result<()> {
             bail!("{} already exists; not overwriting", p.display());
         }
     }
-    let mut writers = paths
-        .iter()
-        .map(|p| WavOut::create(p, info.rate, if mono_files { 1 } else { spec.channels() }, args.bits))
-        .collect::<Result<Vec<_>>>()?;
+    let mut writers = Vec::new();
+    for p in &paths {
+        match WavOut::create(p, info.rate, if mono_files { 1 } else { spec.channels() }, args.bits) {
+            Ok(w) => writers.push(w),
+            Err(e) => {
+                drop(writers);
+                discard(&paths);
+                return Err(e);
+            }
+        }
+    }
 
     // SAFETY: the handler only stores to an atomic.
     unsafe {
@@ -135,70 +142,89 @@ pub fn record(args: RecordArgs, opts: &AudioOpts) -> Result<()> {
     let mut level = [0f32; 2];
     let started = Instant::now();
     let mut last_flush = Instant::now();
-    loop {
-        buf.clear();
-        if let Some(input) = &mut engine.input {
-            input.drain(&mut buf);
-        }
-        for s in &mut scratch {
-            s.clear();
-        }
-        if let Some(l) = limit {
-            // Stop exactly at the requested length, not at the end of a buffer.
-            let want = (l * info.rate as f64).round() as u64;
-            buf.truncate(want.saturating_sub(frames) as usize * dev_ch);
-        }
-        let mut peak = [0f32; 2];
-        for frame in buf.chunks_exact(dev_ch) {
+    let mut overruns_seen = engine.shared.input_overruns.load(Ordering::Relaxed);
+    let mut capture = || -> Result<()> {
+        loop {
+            buf.clear();
+            let overruns = engine.shared.input_overruns.load(Ordering::Relaxed);
+            if let Some(input) = &mut engine.input {
+                input.drain(&mut buf);
+            }
+            // Dropped buffers become silence so the file keeps real time.
+            let gap = overruns.saturating_sub(overruns_seen).min(info.rate as u64 * 60);
+            overruns_seen = overruns;
+            buf.resize(buf.len() + gap as usize * dev_ch, 0.0);
+            for s in &mut scratch {
+                s.clear();
+            }
+            if let Some(l) = limit {
+                // Stop exactly at the requested length, not at the end of a buffer.
+                let want = (l * info.rate as f64).round() as u64;
+                buf.truncate(want.saturating_sub(frames) as usize * dev_ch);
+            }
+            let mut peak = [0f32; 2];
+            for frame in buf.chunks_exact(dev_ch) {
+                for k in 0..n {
+                    let s = frame[c0 + k];
+                    peak[k] = peak[k].max(s.abs());
+                    scratch[if mono_files { k } else { 0 }].push(s);
+                }
+            }
+            for (w, s) in writers.iter_mut().zip(&scratch) {
+                w.write_interleaved(s)?;
+            }
+            frames += (buf.len() / dev_ch) as u64;
             for k in 0..n {
-                let s = frame[c0 + k];
-                peak[k] = peak[k].max(s.abs());
-                scratch[if mono_files { k } else { 0 }].push(s);
+                peak_total[k] = peak_total[k].max(peak[k]);
+                level[k] = peak[k].max(level[k] * 0.8);
+            }
+            if last_flush.elapsed() > Duration::from_secs(1) {
+                for w in &mut writers {
+                    w.flush()?;
+                }
+                last_flush = Instant::now();
+            }
+            let mut meter = String::new();
+            for (k, &l) in level.iter().take(n).enumerate() {
+                let cells = (meter_level(l, -60.0) * 20.0).round() as usize;
+                meter += &format!(
+                    "  {} {:<20} {:>5.1}",
+                    spec.channel as usize + 1 + k,
+                    "█".repeat(cells),
+                    gain_to_db(l).max(-99.0)
+                );
+            }
+            eprint!("\r\x1b[2K● {}{meter}", fmt_time(frames, info.rate));
+            let _ = std::io::stderr().flush();
+            let done = limit.is_some_and(|l| frames >= (l * info.rate as f64).round() as u64);
+            if STOP.load(Ordering::Relaxed) || done {
+                break Ok(());
+            }
+            if let Some(e) = engine.shared.take_errors().first() {
+                eprintln!("\n{e}");
+            }
+            std::thread::sleep(Duration::from_millis(30));
+            if started.elapsed() > Duration::from_secs(3) && frames == 0 {
+                bail!("no audio arriving from {} after 3 s", info.name);
             }
         }
-        for (w, s) in writers.iter_mut().zip(&scratch) {
-            w.write_interleaved(s)?;
-        }
-        frames += (buf.len() / dev_ch) as u64;
-        for k in 0..n {
-            peak_total[k] = peak_total[k].max(peak[k]);
-            level[k] = peak[k].max(level[k] * 0.8);
-        }
-        if last_flush.elapsed() > Duration::from_secs(1) {
-            for w in &mut writers {
-                w.flush()?;
-            }
-            last_flush = Instant::now();
-        }
-        let mut meter = String::new();
-        for (k, &l) in level.iter().take(n).enumerate() {
-            let cells = (meter_level(l, -60.0) * 20.0).round() as usize;
-            meter += &format!(
-                "  {} {:<20} {:>5.1}",
-                spec.channel as usize + 1 + k,
-                "█".repeat(cells),
-                gain_to_db(l).max(-99.0)
-            );
-        }
-        eprint!("\r\x1b[2K● {}{meter}", fmt_time(frames, info.rate));
-        let _ = std::io::stderr().flush();
-        let done = limit.is_some_and(|l| frames >= (l * info.rate as f64).round() as u64);
-        if STOP.load(Ordering::Relaxed) || done {
-            break;
-        }
-        if let Some(e) = engine.shared.take_errors().first() {
-            eprintln!("\n{e}");
-        }
-        std::thread::sleep(Duration::from_millis(30));
-        if started.elapsed() > Duration::from_secs(3) && frames == 0 {
-            bail!("no audio arriving from {} after 3 s", info.name);
-        }
-    }
+    };
+    let captured = capture();
     engine.input = None; // stop capture before finalising
+    eprintln!();
+    if let Err(e) = captured {
+        drop(writers);
+        discard(&paths);
+        return Err(e);
+    }
+    if frames == 0 {
+        drop(writers);
+        discard(&paths);
+        bail!("nothing was recorded");
+    }
     for w in writers {
         w.finalize()?;
     }
-    eprintln!();
     let overruns = engine.shared.input_overruns.load(Ordering::Relaxed);
     for (k, p) in paths.iter().enumerate() {
         let pk = if mono_files { peak_total[k] } else { peak_total[0].max(peak_total[1]) };
@@ -214,6 +240,13 @@ pub fn record(args: RecordArgs, opts: &AudioOpts) -> Result<()> {
         eprintln!("warning: {overruns} frames dropped (system too busy)");
     }
     Ok(())
+}
+
+/// Remove files a failed recording created, so a retry isn't refused.
+fn discard(paths: &[PathBuf]) {
+    for p in paths {
+        let _ = std::fs::remove_file(p);
+    }
 }
 
 pub struct ExportArgs {

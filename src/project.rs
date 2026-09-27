@@ -104,21 +104,28 @@ pub struct Input {
     pub stereo: bool,
 }
 
+/// No real interface has more; keeps channel arithmetic far from overflow.
+const MAX_INPUT_CHANNEL: u16 = 1024;
+
 impl Input {
     pub fn channels(&self) -> u16 {
         if self.stereo { 2 } else { 1 }
     }
 
+    /// Whether a device with `device_channels` inputs can feed this.
+    pub fn fits(&self, device_channels: u16) -> bool {
+        self.channel as u32 + self.channels() as u32 <= device_channels as u32
+    }
+
     /// Parse user syntax: "1" (mono, 1-based) or "1-2" / "1+2" (stereo pair).
     pub fn parse(s: &str) -> Option<Input> {
         let s = s.trim();
+        let num = |t: &str| t.trim().parse::<u16>().ok().filter(|n| (1..=MAX_INPUT_CHANNEL).contains(n));
         if let Some((a, b)) = s.split_once(['-', '+']) {
-            let a: u16 = a.trim().parse().ok()?;
-            let b: u16 = b.trim().parse().ok()?;
-            (a >= 1 && b == a + 1).then(|| Input { channel: a - 1, stereo: true })
+            let (a, b) = (num(a)?, num(b)?);
+            (b == a + 1).then(|| Input { channel: a - 1, stereo: true })
         } else {
-            let a: u16 = s.parse().ok()?;
-            (a >= 1).then(|| Input { channel: a - 1, stereo: false })
+            num(s).map(|a| Input { channel: a - 1, stereo: false })
         }
     }
 }
@@ -521,6 +528,10 @@ pub(crate) mod tests {
         assert_eq!(Input::parse("1+2").unwrap().to_string(), "1-2");
         assert_eq!(Input::parse("2-4"), None);
         assert_eq!(Input::parse("0"), None);
+        assert_eq!(Input::parse("65535-1"), None);
+        assert_eq!(Input::parse("65535-0"), None);
+        assert!(!Input { channel: u16::MAX, stereo: true }.fits(u16::MAX));
+        assert!(Input { channel: 1, stereo: false }.fits(2));
     }
 
     #[test]

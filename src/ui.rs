@@ -322,7 +322,7 @@ fn draw_header(buf: &mut Buffer, area: Rect, app: &App, ti: usize) -> TrackHit {
     put(buf, x + 5, y1, " S ", 3, btn(track.solo, Color::Green));
     put(buf, x + 9, y1, " R ", 3, arm_style);
     let input = format!("in {}", track.input);
-    let bad_input = app.input_channels().is_some_and(|ch| track.input.channel + track.input.channels() > ch);
+    let bad_input = app.input_channels().is_some_and(|ch| !track.input.fits(ch));
     let in_style = if bad_input { base.fg(Color::Red) } else { base.fg(Color::Gray) };
     let in_w = put(buf, x + 14, y1, &input, w.saturating_sub(14), in_style) - (x + 14);
 
@@ -430,7 +430,7 @@ fn draw_lane(buf: &mut Buffer, lane: Rect, app: &App, ti: usize) {
         draw_item(buf, lane, app, item, |a, b| clip_peak(clip, a, b));
     }
     if let Some(d) = dragging.filter(|d| d.to_track == ti)
-        && let Some(clip) = app.project.tracks[d.from_track].clips.get(d.clip)
+        && let Some(clip) = app.project.tracks.get(d.from_track).and_then(|t| t.clips.get(d.clip))
     {
         let offset = d.to_start as i64 - clip.start as i64;
         let name = format!("{} → {}", clip.name, fmt_time(d.to_start, app.rate()));

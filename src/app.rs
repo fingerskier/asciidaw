@@ -99,7 +99,7 @@ pub enum Mode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EditTag {
     Nudge(usize, usize),
-    Gain(usize),
+    Gain(usize, usize),
 }
 
 /// One armed track's in-progress recording.
@@ -108,6 +108,8 @@ pub struct Take {
     pub input: Input,
     pub file: String,
     writer: Option<WavOut>,
+    /// The streaming writer failed; the take is rewritten from memory on stop.
+    failed: bool,
     pub data: Vec<Vec<f32>>,
     pub peaks: Peaks,
     scratch: Vec<f32>,
@@ -120,6 +122,8 @@ pub struct Recording {
     pub rate: u32,
     pub takes: Vec<Take>,
     last_flush: Instant,
+    /// Input-overrun counter already accounted for with silence.
+    overruns_seen: u64,
 }
 
 impl Recording {
@@ -128,7 +132,12 @@ impl Recording {
         self.takes.first().map_or(0, |t| t.data[0].len() as u64)
     }
 
-    fn append(&mut self, buf: &[f32], dev_channels: usize) -> Result<()> {
+    /// Append captured frames, then `gap` frames of silence standing in for
+    /// buffers the input ring had to drop, so later audio stays in time.
+    /// A failing file doesn't stop capture: every take keeps recording into
+    /// memory and a broken file is rewritten on stop.
+    fn append(&mut self, buf: &[f32], dev_channels: usize, gap: u64) -> Result<(), String> {
+        let mut first_err = None;
         for take in &mut self.takes {
             let c0 = take.input.channel as usize;
             let n = take.input.channels() as usize;
@@ -140,19 +149,27 @@ impl Recording {
                     take.scratch.push(s);
                 }
             }
+            let silence = gap as usize * n;
+            take.scratch.resize(take.scratch.len() + silence, 0.0);
+            for ch in &mut take.data {
+                ch.resize(ch.len() + gap as usize, 0.0);
+            }
+            let flush = self.last_flush.elapsed() > Duration::from_secs(1);
             if let Some(w) = &mut take.writer {
-                w.write_interleaved(&take.scratch)?;
+                // Flushing keeps the WAV header current so a crash leaves a playable file.
+                let r = w.write_interleaved(&take.scratch).and_then(|_| if flush { w.flush() } else { Ok(()) });
+                if let Err(e) = r {
+                    first_err.get_or_insert_with(|| format!("{}: {e:#}", take.file));
+                    take.writer = None;
+                    take.failed = true;
+                }
             }
             take.peaks.extend(&take.data);
         }
         if self.last_flush.elapsed() > Duration::from_secs(1) {
-            // Keep the WAV header current so a crash leaves a playable file.
-            for w in self.takes.iter_mut().filter_map(|t| t.writer.as_mut()) {
-                w.flush()?;
-            }
             self.last_flush = Instant::now();
         }
-        Ok(())
+        first_err.map_or(Ok(()), Err)
     }
 }
 
@@ -160,6 +177,9 @@ impl Recording {
 pub struct Drag {
     pub from_track: usize,
     pub clip: usize,
+    /// Identity of the grabbed clip, checked on release in case it changed.
+    source: Arc<AudioData>,
+    start: u64,
     grab: u64,
     pub to_track: usize,
     pub to_start: u64,
@@ -399,6 +419,9 @@ impl App {
     pub fn tick(&mut self) {
         let mut buf = std::mem::take(&mut self.in_buf);
         buf.clear();
+        // Read before draining: anything dropped so far happened after the
+        // ring's current contents (the ring stays full until we drain it).
+        let overruns = self.engine.shared.input_overruns.load(Relaxed);
         if let Some(input) = &mut self.engine.input {
             input.drain(&mut buf);
             let ch = input.info.channels as usize;
@@ -407,11 +430,13 @@ impl App {
                 let peak = buf.iter().skip(c).step_by(ch).fold(0f32, |m, s| m.max(s.abs()));
                 *level = peak.max(*level * METER_DECAY);
             }
-            if let Some(rec) = &mut self.recording
-                && let Err(e) = rec.append(&buf, ch)
-            {
-                self.status =
-                    Some(Status { text: format!("recording: {e:#}"), kind: StatusKind::Error, at: Instant::now() });
+            if let Some(rec) = &mut self.recording {
+                let gap = overruns.saturating_sub(rec.overruns_seen).min(rec.rate as u64 * 60);
+                rec.overruns_seen = overruns;
+                if let Err(e) = rec.append(&buf, ch, gap) {
+                    let text = format!("writing {e} — still recording to memory");
+                    self.status = Some(Status { text, kind: StatusKind::Error, at: Instant::now() });
+                }
             }
         }
         self.in_buf = buf;
@@ -538,7 +563,7 @@ impl App {
         let armed: Vec<usize> = (0..self.project.tracks.len()).filter(|&i| self.project.tracks[i].armed).collect();
         for &i in &armed {
             let t = &self.project.tracks[i];
-            if t.input.channel + t.input.channels() > dev_ch {
+            if !t.input.fits(dev_ch) {
                 bail!("{} records input {} but the device has {dev_ch} channel(s); try :input 1", t.name, t.input);
             }
         }
@@ -556,6 +581,7 @@ impl App {
                 input: t.input,
                 file,
                 writer: Some(writer),
+                failed: false,
                 data: vec![Vec::new(); t.input.channels() as usize],
                 peaks: Peaks::default(),
                 scratch: Vec::new(),
@@ -570,7 +596,8 @@ impl App {
         self.in_buf = stale;
 
         let start = self.cursor;
-        self.recording = Some(Recording { start, rate: in_rate, takes, last_flush: Instant::now() });
+        let overruns_seen = self.engine.shared.input_overruns.load(Relaxed);
+        self.recording = Some(Recording { start, rate: in_rate, takes, last_flush: Instant::now(), overruns_seen });
         if self.engine.output.is_some() {
             self.engine.play(start);
             self.play_origin = Some(start);
@@ -591,7 +618,7 @@ impl App {
         let mut placed = Vec::new();
         let mut problems = Vec::new();
         for take in rec.takes {
-            let Take { track, file, writer, data, .. } = take;
+            let Take { track, file, writer, failed, data, .. } = take;
             let path = self.project.audio_dir().join(&file);
             if let Some(w) = writer
                 && let Err(e) = w.finalize()
@@ -602,15 +629,12 @@ impl App {
                 let _ = std::fs::remove_file(&path);
                 continue;
             }
-            let data = if rec.rate != rate {
-                let d: Vec<Vec<f32>> = data.iter().map(|c| resample(c, rec.rate, rate)).collect();
-                if let Err(e) = wav::write_wav(&path, rate, &d, Bits::F32) {
-                    problems.push(format!("{file}: {e:#}"));
-                }
-                d
-            } else {
-                data
-            };
+            let data = if rec.rate != rate { data.iter().map(|c| resample(c, rec.rate, rate)).collect() } else { data };
+            if (failed || rec.rate != rate)
+                && let Err(e) = wav::write_wav(&path, rate, &data, Bits::F32)
+            {
+                problems.push(format!("{file}: {e:#} (take kept in memory only — save elsewhere with :clip)"));
+            }
             let stem = file.trim_end_matches(".wav").to_string();
             let mut clip = Clip::new(stem, Arc::new(AudioData::new(file.clone(), data)), rec.start);
             // Shift earlier by the round-trip latency so the take lines up.
@@ -777,8 +801,8 @@ impl App {
     fn add_track(&mut self, name: Option<String>) {
         self.checkpoint(None);
         let dev = self.input_channels().unwrap_or(2);
-        let next_in = self.project.tracks.last().map_or(0, |t| t.input.channel + t.input.channels());
-        let input = Input { channel: if next_in < dev { next_in } else { 0 }, stereo: false };
+        let next_in = self.project.tracks.last().map_or(0, |t| t.input.channel as u32 + t.input.channels() as u32);
+        let input = Input { channel: if next_in < dev as u32 { next_in as u16 } else { 0 }, stereo: false };
         let n = self.project.tracks.len() + 1;
         self.project.tracks.push(Track::new(name.unwrap_or_else(|| format!("Track {n}")), input));
         self.sel_track = n - 1;
@@ -804,6 +828,8 @@ impl App {
 
     /// Selected clip, or the one under the cursor on the selected track.
     fn target_clip(&mut self) -> Option<usize> {
+        let n = self.project.tracks[self.sel_track].clips.len();
+        self.sel_clip = self.sel_clip.filter(|&i| i < n);
         if self.sel_clip.is_none() {
             self.sel_clip = self.project.tracks[self.sel_track].clip_at(self.cursor);
         }
@@ -938,7 +964,7 @@ impl App {
 
     fn set_clip_gain(&mut self, db: f32) {
         let Some(i) = self.target_clip() else { return };
-        self.checkpoint(Some(EditTag::Gain(i)));
+        self.checkpoint(Some(EditTag::Gain(self.sel_track, i)));
         self.project.tracks[self.sel_track].clips[i].gain_db = db.clamp(-60.0, 40.0);
         self.sync();
         self.info(format!("clip gain {db:+.1} dB"));
@@ -1038,6 +1064,9 @@ impl App {
     }
 
     fn export_clip(&mut self, rest: &str) {
+        if self.recording.is_some() {
+            return self.warn("stop recording first");
+        }
         let Some(i) = self.target_clip() else { return };
         let clip = self.project.tracks[self.sel_track].clips[i].clone();
         let r = (|| {
@@ -1051,6 +1080,9 @@ impl App {
     }
 
     fn import(&mut self, rest: &str) {
+        if self.recording.is_some() {
+            return self.warn("stop recording first");
+        }
         if rest.is_empty() {
             return self.error("usage: :import <file>");
         }
@@ -1091,6 +1123,8 @@ impl App {
     // ---- input dispatch ---------------------------------------------------------
 
     pub fn on_key(&mut self, key: KeyEvent) {
+        // Editing mid-drag would invalidate the dragged clip's index.
+        self.drag = None;
         match &mut self.mode {
             Mode::Command(buf) => {
                 match key.code {
@@ -1269,7 +1303,7 @@ impl App {
                     self.project.tracks[t].input = i;
                     self.dirty = true;
                     if let Some(ch) = self.input_channels()
-                        && i.channel + i.channels() > ch
+                        && !i.fits(ch)
                     {
                         self.warn(format!("input device only has {ch} channel(s)"));
                     }
@@ -1315,11 +1349,21 @@ impl App {
     pub fn on_mouse(&mut self, m: MouseEvent) {
         let pos = Position { x: m.column, y: m.row };
         let frame_at = |app: &App| app.view_start + m.column.saturating_sub(app.hits.lanes_x) as u64 * app.zoom;
-        let hit = self.hits.tracks.iter().copied().find(|h| h.header.contains(pos) || h.lane.contains(pos));
+        let n_tracks = self.project.tracks.len();
+        // Hits come from the last draw; a track may have been deleted since.
+        let hit = self
+            .hits
+            .tracks
+            .iter()
+            .copied()
+            .find(|h| h.header.contains(pos) || h.lane.contains(pos))
+            .filter(|h| h.track < n_tracks);
         let ctrl = m.modifiers.contains(KeyModifiers::CONTROL);
         let shift = m.modifiers.intersects(KeyModifiers::SHIFT | KeyModifiers::ALT);
         match m.kind {
             MouseEventKind::Down(MouseButton::Left) => {
+                self.drag = None; // a release we never saw must not replay
+                self.ruler_anchor = None;
                 if self.mode != Mode::Normal {
                     self.mode = Mode::Normal;
                     return;
@@ -1337,6 +1381,9 @@ impl App {
                     self.ruler_anchor = Some(f);
                     self.set_cursor(f);
                 } else if let Some(h) = hit {
+                    if h.track != self.sel_track {
+                        self.sel_clip = None;
+                    }
                     self.sel_track = h.track;
                     if h.mute.contains(pos) {
                         self.toggle_mute(h.track);
@@ -1350,10 +1397,13 @@ impl App {
                         let f = frame_at(self);
                         self.sel_clip = self.project.tracks[h.track].clip_at(f);
                         if let Some(i) = self.sel_clip {
-                            let start = self.project.tracks[h.track].clips[i].start;
+                            let c = &self.project.tracks[h.track].clips[i];
+                            let start = c.start;
                             self.drag = Some(Drag {
                                 from_track: h.track,
                                 clip: i,
+                                source: c.source.clone(),
+                                start,
                                 grab: f - start,
                                 to_track: h.track,
                                 to_start: start,
@@ -1385,8 +1435,16 @@ impl App {
                 if let Some(d) = self.drag.take()
                     && d.moved
                 {
-                    let orig = &self.project.tracks[d.from_track].clips[d.clip];
-                    if d.to_track == d.from_track && d.to_start == orig.start {
+                    let same = self
+                        .project
+                        .tracks
+                        .get(d.from_track)
+                        .and_then(|t| t.clips.get(d.clip))
+                        .is_some_and(|c| Arc::ptr_eq(&c.source, &d.source) && c.start == d.start);
+                    if !same || d.to_track >= self.project.tracks.len() {
+                        return; // the clip was edited mid-drag; drop the gesture
+                    }
+                    if d.to_track == d.from_track && d.to_start == d.start {
                         return;
                     }
                     self.checkpoint(None);
@@ -1549,6 +1607,156 @@ mod tests {
         assert_eq!(app.cursor, 500);
         app.run_command("bogus");
         assert_eq!(app.status.as_ref().unwrap().kind, StatusKind::Error);
+    }
+
+    fn click(app: &mut App, kind: MouseEventKind, x: u16, y: u16) {
+        app.on_mouse(MouseEvent { kind, column: x, row: y, modifiers: KeyModifiers::NONE });
+    }
+
+    /// Two tracks laid out like the UI would: headers 0..26, lanes from 26.
+    fn with_hits(app: &mut App) {
+        app.hits.lanes_x = 26;
+        app.hits.tracks = (0..app.project.tracks.len())
+            .map(|i| {
+                let y = i as u16 * 4;
+                TrackHit {
+                    track: i,
+                    header: Rect::new(0, y, 26, 4),
+                    lane: Rect::new(26, y, 100, 4),
+                    mute: Rect::new(1, y + 1, 3, 1),
+                    solo: Rect::new(5, y + 1, 3, 1),
+                    arm: Rect::new(9, y + 1, 3, 1),
+                    input: Rect::new(14, y + 1, 6, 1),
+                    gain: Rect::new(1, y + 2, 8, 1),
+                    pan: Rect::new(12, y + 2, 7, 1),
+                }
+            })
+            .collect();
+    }
+
+    #[test]
+    fn clicking_another_tracks_button_drops_the_clip_selection() {
+        let mut app = app();
+        with_hits(&mut app);
+        app.sel_clip = Some(0); // clip on track 1
+        click(&mut app, MouseEventKind::Down(MouseButton::Left), 10, 5); // arm on track 2
+        assert!(app.project.tracks[1].armed);
+        assert_eq!((app.sel_track, app.sel_clip), (1, None));
+        app.on_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE)); // used to panic
+        app.sel_clip = Some(5); // stale by any other route
+        app.on_key(key('x'));
+        assert_eq!(app.project.tracks[0].clips.len(), 1);
+    }
+
+    #[test]
+    fn editing_mid_drag_cancels_the_drag() {
+        let mut app = app();
+        with_hits(&mut app);
+        click(&mut app, MouseEventKind::Down(MouseButton::Left), 30, 1);
+        click(&mut app, MouseEventKind::Drag(MouseButton::Left), 50, 5);
+        assert!(app.drag.as_ref().is_some_and(|d| d.moved && d.to_track == 1));
+        app.on_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+        click(&mut app, MouseEventKind::Up(MouseButton::Left), 50, 5); // used to panic
+        assert!(app.project.tracks.iter().all(|t| t.clips.is_empty()));
+    }
+
+    #[test]
+    fn a_missed_release_does_not_replay() {
+        let mut app = app();
+        with_hits(&mut app);
+        click(&mut app, MouseEventKind::Down(MouseButton::Left), 30, 1);
+        click(&mut app, MouseEventKind::Drag(MouseButton::Left), 60, 1);
+        // Release happened outside the terminal; next gesture starts on empty track 2.
+        click(&mut app, MouseEventKind::Down(MouseButton::Left), 40, 5);
+        click(&mut app, MouseEventKind::Drag(MouseButton::Left), 70, 5);
+        click(&mut app, MouseEventKind::Up(MouseButton::Left), 70, 5);
+        assert_eq!(app.project.tracks[0].clips[0].start, 0);
+        assert!(app.project.tracks[1].clips.is_empty());
+    }
+
+    #[test]
+    fn drag_moves_clip_between_tracks() {
+        let mut app = app();
+        with_hits(&mut app);
+        click(&mut app, MouseEventKind::Down(MouseButton::Left), 30, 1); // frame 40
+        click(&mut app, MouseEventKind::Drag(MouseButton::Left), 40, 5); // frame 140
+        click(&mut app, MouseEventKind::Up(MouseButton::Left), 40, 5);
+        assert!(app.project.tracks[0].clips.is_empty());
+        assert_eq!(app.project.tracks[1].clips[0].start, 100);
+        assert_eq!((app.sel_track, app.sel_clip), (1, Some(0)));
+    }
+
+    #[test]
+    fn stale_hits_for_a_deleted_track_are_ignored() {
+        let mut app = app();
+        with_hits(&mut app);
+        app.sel_track = 1;
+        app.run_command("deltrack");
+        click(&mut app, MouseEventKind::Down(MouseButton::Left), 2, 5); // used to panic
+        click(&mut app, MouseEventKind::ScrollUp, 2, 6);
+        assert_eq!(app.project.tracks.len(), 1);
+    }
+
+    #[test]
+    fn clip_gain_on_two_tracks_is_two_undo_steps() {
+        let mut app = app();
+        app.project.tracks[1].insert(Clip::new("b", src(100, 0.5), 0));
+        app.sel_clip = Some(0);
+        app.run_command("clipgain -3");
+        app.sel_track = 1;
+        app.sel_clip = Some(0);
+        app.run_command("clipgain -6");
+        app.undo();
+        assert_eq!(app.project.tracks[0].clips[0].gain_db, -3.0);
+        assert_eq!(app.project.tracks[1].clips[0].gain_db, 0.0);
+    }
+
+    fn take(track: usize, writer: Option<WavOut>) -> Take {
+        Take {
+            track,
+            input: Input { channel: track as u16, stereo: false },
+            file: format!("t{track}.wav"),
+            writer,
+            failed: false,
+            data: vec![Vec::new()],
+            peaks: Peaks::default(),
+            scratch: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn dropped_input_becomes_silence_in_the_take() {
+        let mut rec = Recording {
+            start: 0,
+            rate: 48000,
+            takes: vec![take(0, None)],
+            last_flush: Instant::now(),
+            overruns_seen: 0,
+        };
+        rec.append(&[0.5, 0.1, 0.5, 0.1], 2, 3).unwrap();
+        rec.append(&[0.25, 0.1], 2, 0).unwrap();
+        assert_eq!(rec.takes[0].data[0], vec![0.5, 0.5, 0.0, 0.0, 0.0, 0.25]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn one_failing_file_does_not_stop_the_other_take() {
+        let full = WavOut::create(Path::new("/dev/full"), 48000, 1, Bits::F32).unwrap();
+        let mut rec = Recording {
+            start: 0,
+            rate: 48000,
+            takes: vec![take(0, Some(full)), take(1, None)],
+            last_flush: Instant::now(),
+            overruns_seen: 0,
+        };
+        let buf = vec![0.1f32; 2 * 20_000]; // enough to overflow the write buffer
+        let err = rec.append(&buf, 2, 0).unwrap_err();
+        assert!(err.contains("t0.wav"), "{err}");
+        assert!(rec.takes[0].failed && rec.takes[0].writer.is_none());
+        assert_eq!(rec.takes[0].data[0].len(), 20_000);
+        assert_eq!(rec.takes[1].data[0].len(), 20_000);
+        rec.append(&buf, 2, 0).unwrap(); // keeps going in memory
+        assert_eq!(rec.takes[0].data[0].len(), 40_000);
     }
 
     #[test]
