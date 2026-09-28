@@ -162,6 +162,15 @@ pub fn export_range(project: &Project, markers: (Option<u64>, Option<u64>)) -> (
 }
 
 pub fn export_mix(project: &Project, path: &Path, range: (u64, u64), mono: bool, bits: Bits) -> Result<Rendered> {
+    if range.1 > range.0 {
+        let any_solo = project.tracks.iter().any(|t| t.solo);
+        let has_audible_clip = project.tracks.iter().any(|t| {
+            !t.mute && (!any_solo || t.solo) && t.clips.iter().any(|c| c.end() > range.0 && c.start < range.1)
+        });
+        if !has_audible_clip {
+            bail!("no audible clips in export range (check mute/solo and in/out markers)");
+        }
+    }
     let opts = if mono { RenderOpts { which: Which::Mix, channels: 1, pan: false } } else { RenderOpts::STEREO_MIX };
     render_to_file(&project.tracks, project.rate, range.0, range.1, opts, path, bits)
 }
@@ -293,6 +302,18 @@ mod tests {
         assert_eq!(export_range(&p, (Some(70), Some(70))), (70, 70));
         let err = export_mix(&p, Path::new("never-written.wav"), (70, 70), false, Bits::I24).unwrap_err();
         assert!(err.to_string().contains("empty range"));
+    }
+
+    #[test]
+    fn export_rejects_empty_solo_track_before_writing_file() {
+        let mut p = Project::new("x", 48000);
+        p.tracks[0].insert(Clip::new("take", src(100, 0.5), 0));
+        p.tracks[1].solo = true;
+        let path = std::env::temp_dir().join(format!("asciidaw-silent-export-{}.wav", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let err = export_mix(&p, &path, (0, 100), false, Bits::I24).unwrap_err();
+        assert!(err.to_string().contains("no audible clips"));
+        assert!(!path.exists());
     }
 
     #[test]
